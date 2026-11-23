@@ -68,7 +68,8 @@ const TSheets = (function () {
         }
       };
     },
-    _reset: () => { cache = null; }
+    _reset: () => { cache = null; },
+    flush: () => { cache = null; }   // 對應 SpreadsheetApp.flush()：之後重新從試算表讀，看得到別的執行剛寫入的內容
   };
 })();
 

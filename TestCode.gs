@@ -1,5 +1,5 @@
 /**
- * 浩森設計工作管理系統｜後端 v4.8（追加減與進度連動、PDF 依指示更新；v4.7 逐欄合併、簽核與 PDF 分開；v4.6 外部檢查修正、客戶指示執行追蹤、存檔一趟完成；v4.5 系統設定與範本維護、經驗回流；統計、結案唯讀、保固報修；日誌漏填追蹤；文件頁：週報、工程履歷；查驗紀錄、SOP、里程碑；客戶頁；現場總覽與指示追蹤；進度計畫；案件主檔修改；日誌簽核與 PDF；分享／下載分開記錄、唯讀查看 PDF）
+ * 浩森設計工作管理系統｜後端 v4.9（上線前修正：正式版關閉切換身分、分享紀錄後端檢查、同時產 PDF 不重複、照片失敗不留半筆、重送不重複；v4.8 追加減與進度連動、PDF 依指示更新；v4.7 逐欄合併、簽核與 PDF 分開；v4.6 外部檢查修正、客戶指示執行追蹤、存檔一趟完成；v4.5 系統設定與範本維護、經驗回流；統計、結案唯讀、保固報修；日誌漏填追蹤；文件頁：週報、工程履歷；查驗紀錄、SOP、里程碑；客戶頁；現場總覽與指示追蹤；進度計畫；案件主檔修改；日誌簽核與 PDF；分享／下載分開記錄、唯讀查看 PDF）
  * 資料庫：Google Sheet「浩森設計工作管理系統_資料庫」（與 AppSheet 共用）
  * 所有前端呼叫都走 api(action, payload)，之後改成 PWA 時只需換「身分驗證」這一層。
  * 欄位一律用「表頭名稱」對應，不依賴欄位順序。
@@ -17,7 +17,7 @@ const LS = { DRAFT: '草稿', DESIGNER: '待設計師確認', PENDING: '待簽�
 const IS = { TODO: '待處理', REPLIED: '已回報', CLOSED: '已結案' };
 function insStatus_(s) { return s === '處理中' ? IS.TODO : s === '待確認' ? IS.REPLIED : (s || IS.TODO); }
 const LEADER_ROLES = ['Boss', '主管'];   // 可以下指示、指派待辦給別人、管理工種
-const TEST_MODE = true;                 // 測試期：Boss 可切換看員工畫面；正式上線改成 false
+const TEST_MODE = false;                // 正式版固定 false：不提供切換身分。試玩站另外在自己的副本打開，不靠正式後端
 
 /* ========== 入口 ========== */
 function doGet() {
@@ -113,10 +113,16 @@ function run_(email, action, payload) {
     let out;
     lock.waitLock(20000);
     try {
-      // 在鎖內才判斷：資料屬於哪個案件、是否已結案、畫面是否過期（避免檢查完到寫入之間被別人改掉）
-      const cid = target_(action, payload);
-      closedGuard_(action, cid);
-      out = WRITE[action](me, payload);
+      TSheets.flush();   // 拿到鎖之後才讀，確保看到別人剛寫入的內容
+      const seen = reqSeen_(me, action, payload);
+      if (seen) out = seen.out;   // 同一次送出重送（例如網路斷線後重按）：直接回上次的結果，不再寫一次
+      else {
+        // 在鎖內才判斷：資料屬於哪個案件、是否已結案、畫面是否過期（避免檢查完到寫入之間被別人改掉）
+        const cid = target_(action, payload);
+        closedGuard_(action, cid);
+        out = WRITE[action](me, payload);
+        reqDone_(me, action, payload, out);
+      }
     } finally { lock.releaseLock(); }
     // 加速：畫面正在看某個案件時，存檔後順便把這個案件的最新資料一起帶回去，手機不用再跑第二趟
     if (payload._back) {
@@ -130,6 +136,23 @@ function run_(email, action, payload) {
 }
 
 /* ========== 共用工具 ========== */
+/** 重送保護：畫面每次送出帶一個 reqId；同一個 reqId 6 小時內只執行一次 */
+function reqKey_(me, action, d) { return d && d.reqId ? 'req_' + me.id + '_' + action + '_' + String(d.reqId).slice(0, 40) : ''; }
+function reqSeen_(me, action, d) {
+  const k = reqKey_(me, action, d); if (!k) return null;
+  const v = CacheService.getScriptCache().get(k);
+  return v ? JSON.parse(v) : null;
+}
+function reqDone_(me, action, d, out) {
+  const k = reqKey_(me, action, d); if (!k) return;
+  try { CacheService.getScriptCache().put(k, JSON.stringify({ out: out === undefined ? null : out }), 21600); } catch (e) { }
+}
+/** 短暫鎖住（給不在大鎖裡的產檔動作，只在讀寫紀錄的那一小段用） */
+function withLock_(fn) {
+  const lk = LockService.getScriptLock();
+  lk.waitLock(30000);
+  try { TSheets.flush(); return fn(); } finally { lk.releaseLock(); }
+}
 let _ss;
 function ss_() { return _ss || (_ss = TSheets.openById(SS_ID)); }
 
@@ -526,15 +549,28 @@ function dirFor_(path) { const d = String(path).split('/')[0]; return d === CONF
 
 /* ========== 寫入：日誌 ========== */
 
-function savePhotos_(caseId, logId, photos) {
-  if (!photos || !photos.length) return;
-  const dir = photoDir_();
-  photos.forEach(ph => {
-    const pid = uid_();
-    const name = pid + '.照片.' + fmt_(new Date(), 'HHmmss') + '.jpg';
-    dir.createFile(Utilities.newBlob(Utilities.base64Decode(ph.data), 'image/jpeg', name));
-    appendRow_('日誌照片', { '照片ID': pid, '日誌ID': logId, '案件ID': caseId, '照片': PHOTO_DIR + '/' + name, '說明': ph.note || '', '拍攝時間': now_() });
-  });
+/**
+ * 照片先全部上傳到雲端；任何一張失敗，就把這次已上傳的檔案收回並停止，試算表一筆都不寫。
+ * 這樣使用者看到「失敗」時，資料就真的沒有變；再按一次儲存不會多出一篇日誌或重複照片。
+ */
+function uploadPhotos_(photos) {
+  const done = [];
+  if (!photos || !photos.length) return done;
+  try {
+    const dir = photoDir_();
+    photos.forEach(ph => {
+      const pid = uid_(), name = pid + '.照片.' + fmt_(new Date(), 'HHmmss') + '.jpg';
+      const file = dir.createFile(Utilities.newBlob(Utilities.base64Decode(ph.data), 'image/jpeg', name));
+      done.push({ pid: pid, name: name, note: ph.note || '', file: file });
+    });
+  } catch (e) {
+    done.forEach(x => { try { x.file.setTrashed(true); } catch (e2) { } });
+    throw new Error('照片上傳失敗，這次沒有存任何資料，請再按一次儲存（' + e.message + '）');
+  }
+  return done;
+}
+function photoRows_(caseId, logId, ups) {
+  ups.forEach(x => appendRow_('日誌照片', { '照片ID': x.pid, '日誌ID': logId, '案件ID': caseId, '照片': PHOTO_DIR + '/' + x.name, '說明': x.note, '拍攝時間': now_() }));
 }
 
 /** 新增日誌。d.submit = true 時直接送出，否則存成草稿。建立時間之後不能改，用來判斷補登。 */
@@ -547,8 +583,9 @@ function saveLog_(me, d) {
     '日誌狀態': LS.DRAFT, '分享次數': 0
   };
   if (d.submit) Object.assign(row, submitPatch_(me.id, caseRow_(d.caseId)));
-  appendRow_('工程日誌', row);
-  savePhotos_(d.caseId, id, d.photos);
+  const ups = uploadPhotos_(d.photos);   // 先上傳；失敗就整筆不存
+  photoRows_(d.caseId, id, ups);
+  appendRow_('工程日誌', row);   // 日誌最後才寫：照片列先寫，萬一這裡失敗也不會出現半篇日誌
   return id;
 }
 
@@ -575,10 +612,11 @@ function updateLog_(me, d) {
   } else if (d.submit && st === LS.DRAFT) {
     Object.assign(patch, snap ? resignPatch_(l) : submitPatch_(l['填寫人'], caseRow_(l['案件ID'])));
   }
+  const ups = uploadPhotos_(d.photos);   // 新照片先上傳；失敗就停在這裡，刪除、改說明、內容修改都不會生效
   updateRow_('工程日誌', '日誌ID', d.id, patch);
   dels.forEach(id => updateRow_('日誌照片', '照片ID', id, { '刪除時間': now_(), '刪除人': me.id }));
   noteIds.forEach(id => updateRow_('日誌照片', '照片ID', id, { '說明': String(notes[id] || '').trim(), '說明修改人': me.id, '說明修改時間': now_() }));
-  savePhotos_(l['案件ID'], d.id, d.photos);
+  photoRows_(l['案件ID'], d.id, ups);
   return d.id;
 }
 
@@ -638,10 +676,21 @@ function insAtMap_(cid) {
   });
   return m;
 }
+/** PDF 內容需要「至少」到哪個時間點：簽核／修訂時間與指示最後變動時間取較晚者 */
+function pdfNeed_(l, insAt) {
+  return [l['修訂時間'] || l['簽核時間'] || '', insAt === undefined ? (insAtMap_(l['案件ID'])[l['日誌ID']] || '') : (insAt || '')].map(String).sort().pop();
+}
 function pdfFresh_(l, insAt) {
-  if (!l['PDF檔ID']) return false;
-  const need = [l['修訂時間'] || l['簽核時間'] || '', insAt === undefined ? (insAtMap_(l['案件ID'])[l['日誌ID']] || '') : (insAt || '')].map(String).sort().pop();
-  return String(l['PDF時間'] || '') >= need;
+  if (!l['PDF檔ID'] || !l['PDF時間']) return false;
+  // PDF時間 是「開始產檔」的時間，而且一定晚於之前的所有修改；之後的修改時間 ≥ 它，所以用「嚴格晚於」判斷
+  return String(l['PDF時間']) > pdfNeed_(l, insAt);
+}
+/** 產生 PDF 時用到的所有內容（日誌、照片、指示、案件名稱）；產檔前後比對，有變就不能標成最新 */
+const PDF_FP_COLS = ['日期', '工種', '今日狀況', '發現問題', '填寫人', '日誌狀態', '簽核者', '簽核時間', '修訂時間'];
+function pdfFp_(logId) {
+  const l = getLog_(logId), c = caseRow_(l['案件ID']) || {};
+  const ins = tryTable_('主管指示').filter(i => i['案件ID'] === l['案件ID']);
+  return JSON.stringify([PDF_FP_COLS.map(k => l[k]), c['案件名稱'] || '', c['地址'] || '', activePhotos_(logId), ins]);
 }
 function pdfState_(l, insAt) {
   if (logStatus_(l) !== LS.SIGNED) return '';
@@ -653,11 +702,47 @@ function buildLogPdf_(me, d) {
   const l = getLog_(d.id), c = caseRow_(l['案件ID']);
   if (logStatus_(l) !== LS.SIGNED) throw new Error('這篇尚未簽核，不能產生 PDF');
   if (!(l['簽核者'] === me.id || canShare_(me, c) || me.leader)) throw new Error('你不能產生這篇的 PDF');
-  if (pdfFresh_(l)) return { ready: true, at: l['PDF時間'], already: true };
-  try { makePdf_(d.id); }
-  catch (e) { updateRow_('工程日誌', '日誌ID', d.id, { 'PDF錯誤': now_() + ' ' + e.message }); throw new Error('PDF 產生失敗：' + e.message + '（簽核已完成，不受影響，可以重試）'); }
-  updateRow_('工程日誌', '日誌ID', d.id, { 'PDF錯誤': '' });
-  return { ready: true, at: getLog_(d.id)['PDF時間'] };
+  const r = ensureLogPdf_(d.id);
+  const now = getLog_(d.id);
+  return { ready: pdfFresh_(now), at: now['PDF時間'], already: r.already };
+}
+
+/**
+ * 確保這篇有最新的 PDF，回傳檔案。
+ * 同一篇同時只會有一個人在產：另一個人會等前一個做完，直接用那份，不會多產一份。
+ */
+const PDF_WAIT_MS = 120000;
+function ensureLogPdf_(id) {
+  const cache = CacheService.getScriptCache(), key = 'pdfb_' + id, me = Utilities.getUuid();
+  const t0 = Date.now();
+  for (;;) {
+    const st = withLock_(() => {
+      const l = getLog_(id);
+      if (pdfFresh_(l)) { const f = pdfFile_(l); if (f) return { file: f }; }
+      if (cache.get(key)) return { wait: true };
+      cache.put(key, me, 300);   // 我來產（5 分鐘內有效，避免當掉後永遠卡住）
+      return { mine: true };
+    });
+    if (st.file) return { file: st.file, already: true };
+    if (st.mine) break;
+    if (Date.now() - t0 > PDF_WAIT_MS) throw new Error('別人正在產生這篇的 PDF，請稍後再試');
+    Utilities.sleep(2000);
+  }
+  try {
+    const file = makePdf_(id);
+    withLock_(() => updateRow_('工程日誌', '日誌ID', id, { 'PDF錯誤': '' }));
+    return { file: file, already: false };
+  } catch (e) {
+    withLock_(() => updateRow_('工程日誌', '日誌ID', id, { 'PDF錯誤': now_() + ' ' + e.message }));
+    throw new Error('PDF 產生失敗：' + e.message + '（簽核已完成，不受影響，可以重試）');
+  } finally {
+    try { if (cache.get(key) === me) cache.remove(key); } catch (e) { }
+  }
+}
+/** 紀錄裡的 PDF 檔還在才回傳 */
+function pdfFile_(l) {
+  if (!l['PDF檔ID']) return null;
+  try { const f = TDrive.getFileById(l['PDF檔ID']); if (f.isTrashed()) return null; f.getName(); return f; } catch (e) { return null; }
 }
 
 /** 退回修改（內容明顯有誤、不適合發布） */
@@ -690,10 +775,9 @@ function pdfLog_(me, d) {
   const l = getLog_(d.id);
   if (logStatus_(l) !== LS.SIGNED) throw new Error('這篇尚未簽核，或修改後待主管確認，暫時不能分享');
   if (!canShare_(me, caseRow_(l['案件ID']))) throw new Error('只有案件負責設計師或主管可以分享');
-  let file = null;
-  if (pdfFresh_(l)) { try { file = TDrive.getFileById(l['PDF檔ID']); file.getName(); } catch (e) { file = null; } }
-  if (!file) { file = makePdf_(d.id); updateRow_('工程日誌', '日誌ID', d.id, { 'PDF錯誤': '' }); }
-  return { name: file.getName(), data: Utilities.base64Encode(file.getBlob().getBytes()), url: file.getUrl() };
+  const file = ensureLogPdf_(d.id).file;
+  const now = getLog_(d.id);
+  return { name: file.getName(), data: Utilities.base64Encode(file.getBlob().getBytes()), url: file.getUrl(), fresh: pdfFresh_(now) };
 }
 
 /**
@@ -701,8 +785,12 @@ function pdfLog_(me, d) {
  * d.kind = 'share'（手機分享選單完成）或 'download'（下載檔案）。只累加，不重算、不清除歷史。
  */
 function shareLog_(me, d) {
+  if (d.kind !== 'share' && d.kind !== 'download') throw new Error('不明的紀錄類型');
   const l = getLog_(d.id);
   if (!canShare_(me, caseRow_(l['案件ID']))) throw new Error('只有案件負責設計師或主管可以分享');
+  if (logStatus_(l) !== LS.SIGNED) throw new Error('這篇尚未簽核，或修改後待主管確認，不能分享');
+  if (!pdfFresh_(l)) throw new Error('PDF 不是最新版本，請先更新 PDF 再分享');
+  if (!pdfFile_(l)) throw new Error('找不到這篇的 PDF 檔，請先產生 PDF');
   if (d.kind === 'download') updateRow_('工程日誌', '日誌ID', d.id, { '下載次數': (+l['下載次數'] || 0) + 1, '最後下載人': me.id, '最後下載時間': now_() });
   else updateRow_('工程日誌', '日誌ID', d.id, { '分享次數': (+l['分享次數'] || 0) + 1, '最後分享人': me.id, '最後分享時間': now_() });
   return true;
@@ -752,6 +840,11 @@ function photoData_(path) {
 
 /** 產生日誌 PDF，存到「案件資料夾／工程日誌」，覆蓋舊檔 */
 function makePdf_(logId) {
+  // 開始前記下內容版本；產完後再比一次，期間有人下指示、回報或改日誌，就不標成最新（維持「待更新」）
+  const pre = withLock_(() => {
+    Utilities.sleep(1020 - (Date.now() % 1000));   // 時間只記到秒：等到下一秒才開始，確保開始時間晚於之前所有修改
+    return { at: now_(), fp: pdfFp_(logId) };
+  });
   const l = getLog_(logId), c = caseRow_(l['案件ID']);
   if (!c) throw new Error('找不到案件');
   const photos = activePhotos_(logId);
@@ -766,9 +859,19 @@ function makePdf_(logId) {
   const blob = Utilities.newBlob(html, 'text/html', 'log.html').getAs('application/pdf').setName(name);
   const dir = logPdfDir_(c);
   const file = dir.createFile(blob);   // 先建好新檔；失敗就停在這裡，舊檔和紀錄都不動
-  updateRow_('工程日誌', '日誌ID', logId, { 'PDF檔ID': file.getId(), 'PDF時間': now_() });
-  if (l['PDF檔ID'] && l['PDF檔ID'] !== file.getId()) { try { TDrive.getFileById(l['PDF檔ID']).setTrashed(true); } catch (e) { } }   // 新檔與紀錄都成功後才回收舊檔
-  return file;
+  return withLock_(() => {
+    const cur = getLog_(logId);
+    // 別人在這段期間已經存了一份同樣新或更新的 PDF：用他的，收回我這份，不留孤兒檔
+    if (cur['PDF檔ID'] && cur['PDF檔ID'] !== l['PDF檔ID'] && pdfFresh_(cur) && pdfFile_(cur)) {
+      try { file.setTrashed(true); } catch (e) { }
+      return pdfFile_(cur);
+    }
+    const same = pdfFp_(logId) === pre.fp;
+    // PDF時間記「開始產檔」的時間；內容在產檔期間變了就留空＝待更新
+    updateRow_('工程日誌', '日誌ID', logId, { 'PDF檔ID': file.getId(), 'PDF時間': same ? pre.at : '' });
+    if (cur['PDF檔ID'] && cur['PDF檔ID'] !== file.getId()) { try { TDrive.getFileById(cur['PDF檔ID']).setTrashed(true); } catch (e) { } }   // 新檔與紀錄都成功後才回收「目前紀錄上」的舊檔
+    return file;
+  });
 }
 
 function pdfHtml_(l, c, photos, ins, track, dateOf) {
@@ -1535,12 +1638,15 @@ function docHtml_(title, sub, body) {
 function saveDoc_(me, c, sub, name, html, type, srcId) {
   const blob = Utilities.newBlob(html, 'text/html', 'doc.html').getAs('application/pdf').setName(name);
   const d = caseDir_(c), it = d.getFoldersByName(sub), dir = it.hasNext() ? it.next() : d.createFolder(sub);
-  const docs = tryTable_('文件紀錄'), old = srcId ? docs.find(x => x['來源ID'] === srcId && x['文件類型'] === type) : null;
   const file = dir.createFile(blob);   // 先建好新檔；失敗就停在這裡，舊檔和紀錄都不動
-  const row = { '日期': today_(), '文件名稱': name, '檔案連結': file.getUrl(), '檔案ID': file.getId(), '產生人': me.id, '產生時間': now_() };
-  if (old) updateRow_('文件紀錄', '文件ID', old['文件ID'], row);
-  else appendRow_('文件紀錄', Object.assign({ '文件ID': uid_(), '案件ID': c['案件ID'], '文件類型': type, '對內對外': '對外', '來源ID': srcId || '' }, row));
-  if (old && old['檔案ID'] && old['檔案ID'] !== file.getId()) { try { TDrive.getFileById(old['檔案ID']).setTrashed(true); } catch (e) { } }
+  // 記錄在鎖內重新讀：兩人同時產同一份，只會留一筆紀錄，被取代的檔案一定收回
+  withLock_(() => {
+    const docs = tryTable_('文件紀錄'), old = srcId ? docs.find(x => x['來源ID'] === srcId && x['文件類型'] === type) : null;
+    const row = { '日期': today_(), '文件名稱': name, '檔案連結': file.getUrl(), '檔案ID': file.getId(), '產生人': me.id, '產生時間': now_() };
+    if (old) updateRow_('文件紀錄', '文件ID', old['文件ID'], row);
+    else appendRow_('文件紀錄', Object.assign({ '文件ID': uid_(), '案件ID': c['案件ID'], '文件類型': type, '對內對外': '對外', '來源ID': srcId || '' }, row));
+    if (old && old['檔案ID'] && old['檔案ID'] !== file.getId()) { try { TDrive.getFileById(old['檔案ID']).setTrashed(true); } catch (e) { } }
+  });
   return file;
 }
 function pdfOut_(file) { return { name: file.getName(), data: Utilities.base64Encode(file.getBlob().getBytes()), url: file.getUrl() }; }
