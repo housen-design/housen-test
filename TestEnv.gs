@@ -100,9 +100,11 @@ function inspectVisibleFilesReadOnly() {
 /* ========== 真實 Google 上的實測（只用測試試算表與測試資料夾） ========== */
 const TEST_OWNER_ = () => Session.getEffectiveUser().getEmail();
 /** 記下測試網址（部署後執行一次）：之後的拒絕測試會對這個網址送真正的 HTTP 要求 */
+const TEST_EXEC_URL = '';   // 部署後填入「網頁應用程式」的 /exec 網址（在編輯器執行時 Google 只會給 /dev 網址）
 function setWebAppUrl() {
-  const u = ScriptApp.getService().getUrl();
+  const u = TEST_EXEC_URL || ScriptApp.getService().getUrl();
   if (!u) throw new Error('還沒有部署網頁應用程式');
+  if (!/\/exec$/.test(u)) throw new Error('需要部署後的 /exec 網址，不是 ' + u);
   TEST_PROPS.setProperty('TEST_WEBAPP_URL', u);
   Logger.log('測試網址：' + u);
 }
