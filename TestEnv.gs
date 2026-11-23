@@ -114,9 +114,12 @@ function envSnapshot_() {
   const id = testSsId_();
   const names = (Sheets.Spreadsheets.get(id, { fields: 'sheets.properties.title' }).sheets || []).map(s => s.properties.title);
   const vals = Sheets.Spreadsheets.Values.batchGet(id, { ranges: names.map(n => "'" + n.replace(/'/g, "''") + "'") }).valueRanges.map(v => v.values || []);
-  const fs = (Drive.Files.list({ q: 'trashed = false', pageSize: 500, fields: 'files(id,modifiedTime)' }).files || []).map(f => f.id + '@' + f.modifiedTime).sort();
+  // 試算表本身的修改時間由內容比對負責（Google 會在寫入後延遲更新它）；其他檔案比對編號＋修改時間
+  const list = (Drive.Files.list({ q: 'trashed = false', pageSize: 500, fields: 'files(id,name,modifiedTime)' }).files || []);
+  const fs = list.map(f => f.id === id ? f.id : f.id + '@' + f.modifiedTime).sort();
   const rows = {}; names.forEach((n, i) => rows[n] = Math.max(0, vals[i].length - 1));
-  return { key: JSON.stringify([vals, fs]), rows: rows, files: fs.length };
+  const names2 = {}; list.forEach(f => names2[f.id] = f.name);
+  return { key: JSON.stringify([vals, fs]), rows: rows, files: fs.length, list: fs, names: names2 };
 }
 function post_(url, body) {
   const r = UrlFetchApp.fetch(url, { method: 'post', contentType: 'text/plain', payload: JSON.stringify(body), muteHttpExceptions: true, followRedirects: true });
@@ -158,7 +161,8 @@ function liveRejectTests() {
   cases.forEach(([n, body]) => { const r = post_(url, body); ok(n + ' → 拒絕', r && r.ok === false, r && r.error); });
   const after = envSnapshot_();
   ok('以上要求之後：試算表內容完全沒變', after.key.split('],[')[0] === before.key.split('],[')[0] && JSON.stringify(after.rows) === JSON.stringify(before.rows));
-  ok('以上要求之後：檔案完全沒有新增、修改或刪除', after.files === before.files && after.key === before.key, before.files + ' → ' + after.files);
+  const diff = after.list.filter(x => before.list.indexOf(x) < 0).concat(before.list.filter(x => after.list.indexOf(x) < 0)).map(x => (before.names[x.split('@')[0]] || after.names[x.split('@')[0]] || '') + ' ' + x);
+  ok('以上要求之後：檔案完全沒有新增、修改或刪除', after.files === before.files && !diff.length, before.files + ' → ' + after.files + (diff.length ? '；不同：' + diff.join('、') : ''));
   const okHome = post_(url, { action: 'home', token: boss, payload: {} });
   ok('對照：正確的 Boss 金鑰可以讀取工作總表（測試網址本身正常）', okHome.ok && okHome.data && okHome.data.testMode === false);
   Logger.log('拒絕測試 ' + R.filter(Boolean).length + '/' + R.length + ' PASS');
