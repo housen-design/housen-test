@@ -1172,6 +1172,7 @@ async function sharePdf(id) {
   let r;
   try { r = await API('pdfLog', { id }); } catch (e) { busy(false); return toast(e); }
   busy(false);
+  if (r.fresh === false) { refreshCase().then(() => { if (S.tab === 'log') render(); }).catch(() => { }); return toast('產生期間剛好有新的指示或回報，請再按一次「分享 PDF」取得最新版'); }
   const bytes = Uint8Array.from(atob(r.data), c => c.charCodeAt(0));
   const file = new File([bytes], r.name, { type: 'application/pdf' });
   const url = URL.createObjectURL(file);
@@ -1477,7 +1478,7 @@ let NL = null;
 function logForm(log, forDate) {
   if (guard()) return;
   const d = new Date(), today = forDate ? toInput(forDate) : d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  NL = { id: log ? log.id : null, trades: log ? log.trades.slice() : [], photos: [], old: log ? log.photos.map(p => Object.assign({}, p, { orig: p.note || '' })) : [], del: [] };
+  NL = { req: Date.now().toString(36) + Math.random().toString(36).slice(2, 8), id: log ? log.id : null, trades: log ? log.trades.slice() : [], photos: [], old: log ? log.photos.map(p => Object.assign({}, p, { orig: p.note || '' })) : [], del: [] };
   const names = S.home.trades.map(t => t.name), extra = NL.trades.filter(t => !names.includes(t));
   const draft = !log || log.status === '草稿';
   const signed = log && (log.status === '已簽核' || log.resign || log.signedOnce);
@@ -1551,7 +1552,7 @@ async function saveLogNow(submit) {
   busy(true, NL.photos.length ? `上傳 ${NL.photos.length} 張照片中…` : '儲存中…');
   try {
     const notes = {}; NL.old.forEach(x => { if (!NL.del.includes(x.id) && (x.note || '') !== x.orig) notes[x.id] = x.note || ''; });
-    const p = { caseId: S.cur, date: $('#ldate').value, trades: NL.trades, text, issue: $('#liss').value.trim(), photos: NL.photos, submit: !!submit, notes, delPhotos: NL.del };
+    const p = { caseId: S.cur, date: $('#ldate').value, trades: NL.trades, text, issue: $('#liss').value.trim(), photos: NL.photos, submit: !!submit, notes, delPhotos: NL.del, reqId: NL.req + (submit ? 's' : 'd') };
     const id = NL.id ? await API('updateLog', Object.assign({ id: NL.id }, p)) : await API('saveLog', p);
     await refreshCase(); closeSheet(); S.tab = 'log'; S.open = { [id]: true }; render(); toast(submit ? '已送出' : NL.id ? '已儲存修改' : '已存成草稿'); reloadHome().catch(() => { });
   } catch (e) { toast(e); } finally { busy(false); }

@@ -14,8 +14,9 @@
     }
     let uid = Date.now() % 100000;
     const G = {};
-    G.SpreadsheetApp = { openById: () => ({ getSheetByName: sheet, insertSheet: n => { T[n] = [[]]; return sheet(n); } }) };
+    G.SpreadsheetApp = { flush() { }, openById: () => ({ getSheetByName: sheet, insertSheet: n => { T[n] = [[]]; return sheet(n); } }) };
     G.Utilities = {
+      sleep(ms) { const t = Date.now() + Math.min(ms, 1500); while (Date.now() < t) { } },
       getUuid: () => 'd' + (++uid).toString(16) + Math.random().toString(16).slice(2, 10) + 'xxxx',
       formatDate: (d, tz, p) => { const z = new Date(d.getTime() + 8 * 3600e3); const P = n => String(n).padStart(2, '0'); return p.replace('yyyy', z.getUTCFullYear()).replace('MM', P(z.getUTCMonth() + 1)).replace('dd', P(z.getUTCDate())).replace('HH', P(z.getUTCHours())).replace('mm', P(z.getUTCMinutes())).replace('ss', P(z.getUTCSeconds())).replace(/^u$/, String(z.getUTCDay() || 7)); },
       base64Encode: b => b64e(toBin(b)), base64Decode: s => b64d(s), base64DecodeWebSafe: s => b64d(String(s).replace(/-/g, '+').replace(/_/g, '/')),
@@ -43,13 +44,16 @@
       getFolderById: id => folder(decodeURIComponent(id))
     };
     G.LockService = { getScriptLock: () => ({ waitLock() { }, releaseLock() { } }) };
-    G.CacheService = { getScriptCache: () => ({ get: () => null, put() { } }) };
+    const cache = {};
+    G.CacheService = { getScriptCache: () => ({ get: k => (k in cache ? cache[k] : null), put: (k, v) => { cache[k] = String(v); }, remove: k => { delete cache[k]; } }) };
     G.UrlFetchApp = { fetch: u => ({ getContent: () => /logo\.png/.test(u) && logoBin ? logoBin : '', getContentText: () => '{}' }) };
     G.PropertiesService = { getScriptProperties: () => ({ getProperty: () => 's', setProperty() { } }) };
     G.Logger = { log() { } };
     G.HtmlService = {}; G.ContentService = { MimeType: {} }; G.MimeType = { PDF: 'application/pdf' };
     // 案件資料夾的網址在試玩版裡長得不一樣，讓 caseDir_ 找得到
-    const code = src.replace("match(/folders\\/([\\w-]+)/)", "match(/demo\\.folder\\/([^?#]+)/)");
+    if (src.indexOf('const TEST_MODE = false;') < 0) throw new Error('後端找不到 TEST_MODE 設定');
+    // 試玩版自己打開「切換身分」：只改試玩版這份副本，正式後端維持 false
+    const code = src.replace("match(/folders\\/([\\w-]+)/)", "match(/demo\\.folder\\/([^?#]+)/)").replace('const TEST_MODE = false;', 'const TEST_MODE = true;');
     const m = {};
     new Function(...Object.keys(G), 'exp', code + ';exp.run_=run_;exp.reset=()=>{_people=null;try{_settings=null}catch(e){}try{for(const k in _dirs)delete _dirs[k]}catch(e){}};')(...Object.values(G), m);
     return { run: (who, action, payload) => { m.reset(); return m.run_(who, action, payload || {}); }, T, files };
