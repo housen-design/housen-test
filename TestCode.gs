@@ -220,6 +220,8 @@ function fixSchema() {
   schemaGaps_().forEach(m => {
     if (m.newSheet) { ss.insertSheet(m.sheet).getRange(1, 1, 1, m.cols.length).setValues([m.cols]); done.push('新增資料表：' + m.sheet); return; }
     const sh = ss.getSheetByName(m.sheet), last = sh.getLastColumn();
+    const need = last + m.cols.length - sh.getMaxColumns();   // 試算表格子不夠寬（例如只有 26 欄）就先在最右邊加欄，否則寫不進去
+    if (need > 0) sh.insertColumnsAfter(sh.getMaxColumns(), need);
     sh.getRange(1, last + 1, 1, m.cols.length).setValues([m.cols]);
     done.push(m.sheet + ' 補欄位：' + m.cols.join('、'));
   });
