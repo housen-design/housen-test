@@ -874,6 +874,7 @@ function makePdf_(logId) {
   });
 }
 
+function sec_(title, blocks) { return blocks.length ? '<div class="keep"><h2>' + h_(title) + '</h2>' + blocks[0] + '</div>' + blocks.slice(1).join('') : ''; }
 function pdfHtml_(l, c, photos, ins, track, dateOf) {
   const logo = logoData_();
   const row = (k, v) => v ? '<tr><td class="k">' + h_(k) + '</td><td>' + h_(v) + '</td></tr>' : '';
@@ -882,9 +883,9 @@ function pdfHtml_(l, c, photos, ins, track, dateOf) {
   const insBlock = i => '<div class="ins"><div class="it">' + h_(i['指示內容']) + '　<span class="st ' + stCls(i['狀態']) + '">' + h_(stTxt(i['狀態'])) + '</span></div>'
     + '<div class="im">下指示：' + h_(pname_(i['下指示人'])) + (i['負責人'] ? '　負責人：' + h_(pname_(i['負責人'])) : '') + (i['期限'] ? '　期限：' + h_(i['期限']) : '') + '</div>'
     + (i['回報內容'] ? '<div class="rp">處理回報：' + h_(i['回報內容']) + '</div>' : '') + '</div>';
-  let ph = '';
+  const ph = [];   // 每兩張照片一列
   for (let k = 0; k < photos.length; k += 2) {
-    ph += '<tr>' + [photos[k], photos[k + 1]].map(p => p ? '<td><img src="' + photoData_(p['照片']) + '" width="240"><div class="pn">' + h_(p['說明'] || [p['空間'], p['位置']].filter(String).join('・')) + '</div></td>' : '<td></td>').join('') + '</tr>';
+    ph.push('<tr>' + [photos[k], photos[k + 1]].map(p => p ? '<td><img src="' + photoData_(p['照片']) + '" width="240"><div class="pn">' + h_(p['說明'] || [p['空間'], p['位置']].filter(String).join('・')) + '</div></td>' : '<td></td>').join('') + '</tr>');
   }
   const signed = l['簽核者'] ? pname_(l['簽核者']) + '（' + String(l['簽核時間']).slice(0, 16) + '）' : '';
   return '<html><head><meta charset="utf-8"><style>'
@@ -899,7 +900,8 @@ function pdfHtml_(l, c, photos, ins, track, dateOf) {
     + '.ins{border:0.6pt solid #e2d9cc;padding:6pt 9pt;margin-bottom:6pt}.it{font-weight:bold}.im{font-size:9pt;color:#7a7067}'
     + '.rp{font-size:9.5pt;margin-top:3pt;background:#f7f4ef;padding:3pt 6pt;white-space:pre-wrap}'
     + '.st{font-size:8.5pt;font-weight:normal;padding:1pt 5pt}.st.ok{color:#4f7a5c}.st.wait{color:#b9773a}.st.todo{color:#5b6f8c}'
-    + '.foot{margin-top:22pt;border-top:0.6pt solid #e2d9cc;padding-top:5pt;font-size:8.5pt;color:#8a7f75}'
+    + '.foot{margin-top:22pt;border-top:0.6pt solid #e2d9cc;padding-top:5pt;font-size:8.5pt;color:#8a7f75;page-break-inside:avoid}'
+    + '.keep,.ins,table.ph tr{page-break-inside:avoid}h2{page-break-after:avoid}'
     + '</style></head><body>'
     + '<table class="hd"><tr><td>' + (logo ? '<img src="' + logo + '" height="62">' : '<b>浩森設計 HOUSEN</b>') + '</td>'
     + '<td><div class="tt">工程日誌</div><div class="ts">' + h_(c['案件名稱']) + '　' + h_(l['日期']) + '</div></td></tr></table>'
@@ -907,9 +909,10 @@ function pdfHtml_(l, c, photos, ins, track, dateOf) {
     + row('工種', String(l['工種'] || '').split(/\s*,\s*/).join('、')) + row('填寫人', pname_(l['填寫人'])) + row('主管簽核', signed) + '</table>'
     + '<h2>施工內容</h2><div class="txt">' + (h_(l['今日狀況']) || '（無）') + '</div>'
     + (l['發現問題'] ? '<h2>現場問題</h2><div class="issue">' + h_(l['發現問題']) + '</div>' : '')
-    + (ph ? '<h2>現場照片</h2><table class="ph">' + ph + '</table>' : '')
-    + (ins.length ? '<h2>主管指示</h2>' + ins.map(insBlock).join('') : '')
-    + (track.length ? '<h2>追蹤中事項</h2>' + track.map(i => '<div class="im">源自 ' + h_(dateOf(i['日誌ID'])) + ' 日誌</div>' + insBlock(i)).join('') : '')
+    // 分頁：標題和它的第一個區塊放在一起，不讓標題單獨留在頁尾；每個指示框、每列照片不切成兩半
+    + (ph.length ? '<div class="keep"><h2>現場照片</h2><table class="ph">' + ph[0] + '</table></div>' + (ph.length > 1 ? '<table class="ph">' + ph.slice(1).join('') + '</table>' : '') : '')
+    + sec_('主管指示', ins.map(insBlock))
+    + sec_('追蹤中事項', track.map(i => '<div class="keep"><div class="im">源自 ' + h_(dateOf(i['日誌ID'])) + ' 日誌</div>' + insBlock(i) + '</div>'))
     + '<div class="foot">狀態截至 ' + fmt_(new Date(), 'yyyy/MM/dd HH:mm') + (l['修訂時間'] ? '　・修訂於 ' + h_(String(l['修訂時間']).slice(0, 10)) : '')
     + '<br>浩森設計 HOUSEN INTERIOR DESIGN</div>'
     + '</body></html>';
