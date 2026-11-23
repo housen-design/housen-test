@@ -169,11 +169,11 @@ function liveRejectTests() {
 function runFlowTest() {
   const R = [], ok = (n, c, i) => { R.push(!!c); Logger.log((c ? 'PASS ' : 'FAIL ') + n + (i ? '  ' + String(i).slice(0, 120) : '')); };
   const BOSS = TEST_OWNER_(), KX = 'kx@test.invalid', PF = 'pf@test.invalid';
-  const run = (who, a, d) => { TSheets.flush(); return run_(who, a, d || {}); };
+  const run = (who, a, d) => run_(who, a, d || {});   // 寫入動作會在鎖內自己重新讀取
   const L = id => { TSheets.flush(); return getLog_(id); };
   // 用測試資料夾裡現有的兩張假照片
   const imgs = readTable_('日誌照片').slice(0, 2).map(p => Utilities.base64Encode(TDrive.getFolderById(testRootId_()).getFoldersByName(PHOTO_DIR).next().getFilesByName(p['照片'].split('/').pop()).next().getBlob().getBytes()));
-  const id = run(KX, 'saveLog', { caseId: 'C1', date: '2026/11/23', trades: ['系統櫃'], text: '【1123 實測】系統櫃進場安裝，主臥衣櫃到頂 260cm。', issue: '收邊需再確認', submit: true, reqId: 'flow1123',
+  const id = run(KX, 'saveLog', { caseId: 'C1', date: '2026/11/23', trades: ['系統櫃'], text: '【1123 實測】系統櫃進場安裝，主臥衣櫃到頂 260cm。', issue: '收邊需再確認', submit: true, reqId: 'flow' + Date.now(),
     photos: [{ data: imgs[0], note: '1123 實測照片一：衣櫃到頂' }, { data: imgs[1], note: '1123 實測照片二：收邊細節' }] });
   ok('凱翔送出日誌（2 張照片）', readTable_('日誌照片').filter(p => p['日誌ID'] === id).length === 2 && L(id)['日誌狀態'] === LS.DESIGNER, id);
   run(PF, 'confirmLog', { id: id });

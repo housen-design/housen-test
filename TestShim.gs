@@ -13,17 +13,26 @@ function testRootId_() { const id = TEST_PROPS.getProperty('TEST_ROOT_ID'); if (
 function testSsId_() { const id = TEST_PROPS.getProperty('TEST_SS_ID'); if (!id) throw new Error('測試環境尚未建立（請先執行 setupTestEnv）'); return id; }
 
 /* ---------- 試算表（Sheets API） ---------- */
+/** Sheets API 每分鐘有讀寫次數上限：碰到上限就等一下再試（最多 4 次），不讓測試半途失敗 */
+function sheetsRetry_(fn) {
+  for (let i = 0; ; i++) {
+    try { return fn(); } catch (e) {
+      if (i >= 4 || !/Quota exceeded|rateLimit|429|Rate Limit/i.test(String(e && e.message))) throw e;
+      Utilities.sleep(15000 * (i + 1));
+    }
+  }
+}
 const TSheets = (function () {
   let cache = null;   // { 表名: 二維陣列（顯示值） }
+  let names = null;   // 工作表名稱（同一次執行只查一次）
   const q = n => "'" + String(n).replace(/'/g, "''") + "'";
   const col = n => { let s = ''; n = n | 0; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
   function load(id) {
     if (cache) return cache;
-    const meta = Sheets.Spreadsheets.get(id, { fields: 'sheets.properties.title' });
-    const names = (meta.sheets || []).map(s => s.properties.title);
+    if (!names) names = sheetsRetry_(() => (Sheets.Spreadsheets.get(id, { fields: 'sheets.properties.title' }).sheets || []).map(s => s.properties.title));
     cache = {};
     if (names.length) {
-      const r = Sheets.Spreadsheets.Values.batchGet(id, { ranges: names.map(q), valueRenderOption: 'FORMATTED_VALUE' });
+      const r = sheetsRetry_(() => Sheets.Spreadsheets.Values.batchGet(id, { ranges: names.map(q), valueRenderOption: 'FORMATTED_VALUE' }));
       (r.valueRanges || []).forEach((vr, i) => { cache[names[i]] = vr.values || [[]]; });
     }
     return cache;
@@ -44,7 +53,7 @@ const TSheets = (function () {
       }),
       appendRow: row => {
         const vals = [row.map(v => v == null ? '' : String(v))];
-        Sheets.Spreadsheets.Values.append({ values: vals }, id, q(name) + '!A1', { valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS' });
+        sheetsRetry_(() => Sheets.Spreadsheets.Values.append({ values: vals }, id, q(name) + '!A1', { valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS' }));
         rows().push(vals[0]);
       }
     };
@@ -52,7 +61,7 @@ const TSheets = (function () {
   function this_set(id, name, r, c, vals) {
     const v = vals.map(row => row.map(x => x == null ? '' : String(x)));
     const a1 = q(name) + '!' + col(c) + r + ':' + col(c + v[0].length - 1) + (r + v.length - 1);
-    Sheets.Spreadsheets.Values.update({ values: v }, id, a1, { valueInputOption: 'RAW' });
+    sheetsRetry_(() => Sheets.Spreadsheets.Values.update({ values: v }, id, a1, { valueInputOption: 'RAW' }));
     const t = load(id)[name];
     v.forEach((row, i) => { t[r - 1 + i] = t[r - 1 + i] || []; row.forEach((x, j) => { t[r - 1 + i][c - 1 + j] = x; }); });
   }
@@ -63,8 +72,8 @@ const TSheets = (function () {
         getId: () => id,
         getSheetByName: n => (n in load(id)) ? sheetObj(id, n) : null,
         insertSheet: n => {
-          Sheets.Spreadsheets.batchUpdate({ requests: [{ addSheet: { properties: { title: n } } }] }, id);
-          load(id)[n] = [[]]; return sheetObj(id, n);
+          sheetsRetry_(() => Sheets.Spreadsheets.batchUpdate({ requests: [{ addSheet: { properties: { title: n } } }] }, id));
+          load(id)[n] = [[]]; if (names) names.push(n); return sheetObj(id, n);
         }
       };
     },
