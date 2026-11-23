@@ -1,5 +1,5 @@
 /**
- * 測試環境的「隔離層」：取代 SpreadsheetApp 與 DriveApp。
+ * 測試環境的「隔離層」：取代 Apps Script 內建的試算表與雲端硬碟服務。
  *
  * 1. 權限縮小：只用 drive.file（只能碰這個專案自己建立的檔案）＋ Sheets／Drive API，
  *    Google 層級就看不到你雲端硬碟裡其他檔案，也打不開正式試算表。
